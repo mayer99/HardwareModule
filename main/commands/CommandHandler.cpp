@@ -3,18 +3,29 @@
 #include "freertos/task.h"
 #include "driver/uart.h"
 #include "esp_log.h"
-#include <string.h>
+#include <cstring>
 #include <algorithm>
 
 CommandHandler::CommandHandler()
 {
     initializeUart();
-    xTaskCreate(updateTask, "UpdateTask", 25600, this, 5, NULL);
+    xTaskCreate(
+        CommandHandler::updateTaskWrapper,
+        "CommandHandlerUpdateTask",
+        25600,
+        this,
+        1,
+        nullptr);
 }
 
-void CommandHandler::updateTask(void *args)
+void CommandHandler::updateTaskWrapper(void *args)
 {
-    std::vector<uint8_t> buffer;
+    auto *controller = static_cast<CommandHandler *>(args);
+    controller->updateTask();
+};
+
+void CommandHandler::updateTask()
+{
     while (1)
     {
         uint8_t newDataBuffer[256];
@@ -32,6 +43,7 @@ void CommandHandler::updateTask(void *args)
         }
         buffer.insert(buffer.end(), newDataBuffer, newDataBuffer + newDataLength);
 
+        int newStart = 0;
         for (int i = 0; i < buffer.size(); i++)
         {
             ESP_LOGI("UART", "Reading byte %d", buffer[i]);
@@ -76,16 +88,41 @@ void CommandHandler::updateTask(void *args)
             }
             ESP_LOGI("UART", "End");
 
-            std::vector<uint8_t> subset(buffer.begin() + i + 3, buffer.begin() + i + length - 3);
+            std::vector<uint8_t> frame(buffer.begin() + i, buffer.begin() + i + length);
+            newStart = i + length;
+
             // convert subset to hex string
             std::string hexString;
-            for (uint16_t j = 0; j < subset.size(); j++)
+            for (uint16_t j = 0; j < frame.size(); j++)
             {
                 char hex[3];
-                sprintf(hex, "%02X", subset[j]);
+                sprintf(hex, "%02X", frame[j]);
                 hexString += hex;
             }
             ESP_LOGI("UART", "Hex string: %s", hexString.c_str());
+
+            if (frame[3] == 0x01)
+            {
+                ESP_LOGI("UART", "Received command 0x01");
+                uint8_t red = frame[4];
+                uint8_t green = frame[5];
+                uint8_t blue = frame[6];
+                uint16_t duration = static_cast<uint16_t>(frame[7] << 8 | frame[8]);
+                float brightness;
+                std::memcpy(&brightness, &frame[9], sizeof(float));
+                bool interrupt = static_cast<bool>(frame[13]);
+                // log those values
+                ESP_LOGI("UART", "Red: %d", red);
+                ESP_LOGI("UART", "Green: %d", green);
+                ESP_LOGI("UART", "Blue: %d", blue);
+                ESP_LOGI("UART", "Duration: %d", duration);
+                ESP_LOGI("UART", "Brightness: %f", brightness);
+                ESP_LOGI("UART", "Interrupt: %d", interrupt);
+            }
+        }
+        if (newStart > 0)
+        {
+            buffer.erase(buffer.begin(), buffer.begin() + newStart);
         }
     }
 };

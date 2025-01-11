@@ -16,11 +16,13 @@
 class CommandHandler
 {
 private:
+    std::vector<uint8_t> buffer;
     void initializeUart();
+    static void updateTaskWrapper(void *args);
+    void updateTask();
 
 public:
     CommandHandler();
-    static void updateTask(void* args);
 };
 
 #endif

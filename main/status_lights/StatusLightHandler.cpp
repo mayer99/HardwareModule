@@ -3,24 +3,38 @@
 #include "PulseAnimation.h"
 #include "FadeInAnimation.h"
 #include "FadeOutAnimation.h"
+#include <CommandHandler.h>
+#include "StatusLightCommand.h"
+#include <freertos/queue.h>
 
-StatusLightController::StatusLightController()
+StatusLightHandler::StatusLightHandler()
 {
-    xTaskCreate(updateTask, "updateTask", 4096, NULL, 5, NULL);
+    mutex = xSemaphoreCreateMutex();
+    xTaskCreate(
+        StatusLightController::updateTaskWrapper,
+        "StatusLightControllerUpdateTask",
+        25600,
+        this,
+        1,
+        nullptr);
 }
 
-void StatusLightController::updateTask(void* args)
+void StatusLightHandler::updateTaskWrapper(void *args)
 {
-    StatusLights statusLights;
-    std::unique_ptr<StatusLightAnimation> currentAnimation;
-    std::unique_ptr<StatusLightAnimation> nextAnimation;
+    auto *controller = static_cast<StatusLightController *>(args);
+    controller->updateTask();
+}
+
+void StatusLightHandler::updateTask()
+{
     while (true)
     {
+        xSemaphoreTake(mutex, portMAX_DELAY);
         if (currentAnimation == nullptr)
         {
             return;
         }
-        currentAnimation->update(deltaTime);
+        currentAnimation->update(INTERVAL);
         currentAnimation->render();
         if (currentAnimation->isFinished())
         {
@@ -35,20 +49,16 @@ void StatusLightController::updateTask(void* args)
                 nextAnimation = nullptr;
             }
         }
-        vTaskDelay(INTERVAL);
+        xSemaphoreGive(mutex);
+        vTaskDelay(pdMS_TO_TICKS(INTERVAL));
     }
 }
 
-void StatusLightController::update()
+void StatusLightController::sendCommand(Command command)
 {
-    std::chrono::steady_clock::time_point currentTime = std::chrono::steady_clock::now();
-    int deltaTime = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastExecutionTime).count();
-    if (deltaTime > INTERVAL)
-    {
-        lastExecutionTime = currentTime;
-        
-    }
-};
+    command.data = std::vector<int>{1, 2, 3}; // Dynamische Daten
+    xQueueSend(commandQueue, &command, portMAX_DELAY);
+}
 
 void StatusLightController::skipAnimation(bool interruptCurrentAnimation)
 {
@@ -135,7 +145,7 @@ void StatusLightController::test()
         .blue = 0,
         .duration = 5000, // Dauer der Animation in ms
         .brightness = 0.8f,
-        .infinite = true  // Endlosschleife
+        .infinite = true // Endlosschleife
     };
     auto loadingAnimation = std::make_unique<LoadingAnimation>(config, &statusLights);
     scheduleAnimation(std::move(loadingAnimation), true);
@@ -149,7 +159,7 @@ void StatusLightController::schedulePulseAnimation()
         .blue = 0,
         .duration = 2000, // Dauer der Animation in ms
         .brightness = 0.8f,
-        .infinite = true  // Endlosschleife
+        .infinite = true // Endlosschleife
     };
     auto loadingAnimation = std::make_unique<LoadingAnimation>(config, &statusLights);
     scheduleAnimation(std::move(loadingAnimation), true);
