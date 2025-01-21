@@ -9,8 +9,17 @@
 #include <memory>
 #include <cmath>
 
+enum StatusLightAnimationType {
+    ERROR,
+    FADE_IN,
+    FADE_OUT,
+    LOADING,
+    PULSE
+};
+
 struct StatusLightAnimationConfig
 {
+    StatusLightAnimationType type;
     uint8_t red;
     uint8_t green;
     uint8_t blue;
@@ -34,17 +43,16 @@ protected:
     int duration;
     float brightness;
     bool infinite;
-    StatusLights *statusLights;
+    StatusLights &statusLights;
     float progress = 0.0f;
     const float pi = 3.14159f;
 
 public:
-    StatusLightAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights);
+    StatusLightAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights);
     void update(int deltaTime);
     virtual void render();
-    void setColor(uint8_t red, uint8_t green, uint8_t blue);
-    void setColor(uint8_t red, uint8_t green, uint8_t blue, int duration);
-    void setBrightness(float brightness, int duration);
+    void changeColor(uint8_t red, uint8_t green, uint8_t blue, int duration);
+    void changeBrightness(float brightness, int duration);
     bool isInfinite();
     void setInfinite(bool infinite);
     int getDuration();

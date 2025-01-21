@@ -6,7 +6,7 @@
 class FadeOutAnimation : public StatusLightAnimation
 {
 public:
-  FadeOutAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights);
+  FadeOutAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights);
   void render() override;
 };
 

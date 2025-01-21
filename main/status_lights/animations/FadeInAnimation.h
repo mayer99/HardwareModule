@@ -6,7 +6,7 @@
 class FadeInAnimation : public StatusLightAnimation
 {
 public:
-  FadeInAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights);
+  FadeInAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights);
   void render() override;
 };
 

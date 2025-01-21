@@ -1,11 +1,11 @@
 #include <StatusLightAnimation.h>
 
-StatusLightAnimation::StatusLightAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights)
+StatusLightAnimation::StatusLightAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights)
     : red(config.red), green(config.green), blue(config.blue), duration(config.duration), brightness(config.brightness), infinite(config.infinite), statusLights(statusLights)
 {
 }
 
-void StatusLightAnimation::setColor(uint8_t red, uint8_t green, uint8_t blue, int duration)
+void StatusLightAnimation::changeColor(uint8_t red, uint8_t green, uint8_t blue, int duration)
 {
     if (duration == 0)
     {
@@ -14,17 +14,29 @@ void StatusLightAnimation::setColor(uint8_t red, uint8_t green, uint8_t blue, in
         this->blue = blue;
         return;
     }
-    colorChangeTransition = std::make_unique<ColorChangeTransition>(this->red, this->green, this->blue, red, green, blue, duration);
+    ColorChangeTransitionConfig config = {
+        .initialRed = this->red,
+        .initialGreen = this->green,
+        .initialBlue = this->blue,
+        .targetRed = red,
+        .targetGreen = green,
+        .targetBlue = blue,
+        .duration = duration};
+    colorChangeTransition = std::make_unique<ColorChangeTransition>(config);
 }
 
-void StatusLightAnimation::setBrightness(float brightness, int duration)
+void StatusLightAnimation::changeBrightness(float brightness, int duration)
 {
     if (duration == 0)
     {
         this->brightness = brightness;
         return;
     }
-    brightnessChangeTransition = std::make_unique<BrightnessChangeTransition>(this->brightness, brightness, duration);
+    BrightnessChangeTransitionConfig config = {
+        .initialBrightness = this->brightness,
+        .targetBrightness = brightness,
+        .duration = duration};
+    brightnessChangeTransition = std::make_unique<BrightnessChangeTransition>(config);
 }
 
 void StatusLightAnimation::update(int deltaTime)

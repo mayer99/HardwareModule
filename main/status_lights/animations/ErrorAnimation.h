@@ -10,7 +10,7 @@ private:
   float ratio = 0.5f;
 
 public:
-  ErrorAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights);
+  ErrorAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights);
   void render() override;
 };
 

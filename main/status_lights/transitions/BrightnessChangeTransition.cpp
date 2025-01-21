@@ -1,7 +1,7 @@
 #include <BrightnessChangeTransition.h>
 
-BrightnessChangeTransition::BrightnessChangeTransition(float initialBrightness, float targetBrightness, int duration)
-    : StatusLightTransition(duration), initialBrightness(initialBrightness), targetBrightness(targetBrightness)
+BrightnessChangeTransition::BrightnessChangeTransition(const BrightnessChangeTransitionConfig &config)
+    : StatusLightTransition(config.duration), initialBrightness(config.initialBrightness), targetBrightness(config.targetBrightness)
 {
 }
 
@@ -14,7 +14,7 @@ void BrightnessChangeTransition::updateBrightness(int deltaTime, float &brightne
         brightness = targetBrightness;
         return;
     }
-    float progress = std::clamp(float(elapsedTime) / duration, 0.0f, 1.0f);
+    float progress = float(elapsedTime) / duration;
     brightness = initialBrightness + (targetBrightness - initialBrightness) * progress;
 }
 

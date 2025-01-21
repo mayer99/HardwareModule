@@ -7,10 +7,10 @@ class LoadingAnimation : public StatusLightAnimation
 {
 private:
   float offset;
-  float ratio = 0.6f;
+  float ratio = 0.7f;
 
 public:
-  LoadingAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights);
+  LoadingAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights);
   void render() override;
 };
 

@@ -6,7 +6,7 @@
 class PulseAnimation : public StatusLightAnimation
 {
 public:
-  PulseAnimation(const StatusLightAnimationConfig &config, StatusLights *statusLights);
+  PulseAnimation(const StatusLightAnimationConfig &config, StatusLights &statusLights);
   void render() override;
 };
 

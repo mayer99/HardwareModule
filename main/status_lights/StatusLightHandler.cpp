@@ -1,28 +1,29 @@
-#include <StatusLightController.h>
+#include <StatusLightHandler.h>
 #include "LoadingAnimation.h"
 #include "PulseAnimation.h"
 #include "FadeInAnimation.h"
 #include "FadeOutAnimation.h"
 #include <CommandHandler.h>
-#include "StatusLightCommand.h"
 #include <freertos/queue.h>
+#include <esp_log.h>
+#include "ErrorAnimation.h"
+#include <esp_task_wdt.h>
 
 StatusLightHandler::StatusLightHandler()
 {
     mutex = xSemaphoreCreateMutex();
-    xTaskCreate(
-        StatusLightController::updateTaskWrapper,
-        "StatusLightControllerUpdateTask",
-        25600,
-        this,
-        1,
-        nullptr);
+    if (mutex == nullptr)
+    {
+        ESP_LOGE("StatusLightHandler", "Failed to create mutex");
+        return;
+    }
+    xTaskCreate(updateTaskWrapper, "StatusLightHandlerUpdateTask", 8128, this, 5, nullptr);
 }
 
 void StatusLightHandler::updateTaskWrapper(void *args)
 {
-    auto *controller = static_cast<StatusLightController *>(args);
-    controller->updateTask();
+    auto *instance = static_cast<StatusLightHandler *>(args);
+    instance->updateTask();
 }
 
 void StatusLightHandler::updateTask()
@@ -32,13 +33,14 @@ void StatusLightHandler::updateTask()
         xSemaphoreTake(mutex, portMAX_DELAY);
         if (currentAnimation == nullptr)
         {
-            return;
+            xSemaphoreGive(mutex);
+            vTaskDelay(pdMS_TO_TICKS(INTERVAL));
+            continue;
         }
         currentAnimation->update(INTERVAL);
         currentAnimation->render();
         if (currentAnimation->isFinished())
         {
-            ESP_LOGI(TAG, "currentAnimation finished");
             if (nextAnimation == nullptr)
             {
                 currentAnimation = nullptr;
@@ -54,16 +56,12 @@ void StatusLightHandler::updateTask()
     }
 }
 
-void StatusLightController::sendCommand(Command command)
+void StatusLightHandler::skipAnimation(bool interruptCurrentAnimation)
 {
-    command.data = std::vector<int>{1, 2, 3}; // Dynamische Daten
-    xQueueSend(commandQueue, &command, portMAX_DELAY);
-}
-
-void StatusLightController::skipAnimation(bool interruptCurrentAnimation)
-{
+    xSemaphoreTake(mutex, portMAX_DELAY);
     if (currentAnimation == nullptr)
     {
+        xSemaphoreGive(mutex);
         return;
     }
 
@@ -88,12 +86,15 @@ void StatusLightController::skipAnimation(bool interruptCurrentAnimation)
             currentAnimation->setInfinite(false);
         }
     }
+    xSemaphoreGive(mutex);
 }
 
-void StatusLightController::stopAnimation(bool interruptCurrentAnimation)
+void StatusLightHandler::stopAnimation(bool interruptCurrentAnimation)
 {
+    xSemaphoreTake(mutex, portMAX_DELAY);
     if (currentAnimation == nullptr)
     {
+        xSemaphoreGive(mutex);
         return;
     }
 
@@ -114,10 +115,18 @@ void StatusLightController::stopAnimation(bool interruptCurrentAnimation)
             currentAnimation->setInfinite(false);
         }
     }
+    xSemaphoreGive(mutex);
 }
 
-void StatusLightController::scheduleAnimation(std::unique_ptr<StatusLightAnimation> animation, bool interruptCurrentAnimation)
+void StatusLightHandler::startAnimation(const StatusLightAnimationConfig &config, bool interruptCurrentAnimation)
 {
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    auto animation = createAnimation(config);
+    if (animation == nullptr)
+    {
+        xSemaphoreGive(mutex);
+        return;
+    }
     if (currentAnimation == nullptr)
     {
         currentAnimation = std::move(animation);
@@ -135,32 +144,51 @@ void StatusLightController::scheduleAnimation(std::unique_ptr<StatusLightAnimati
             nextAnimation = std::move(animation);
         }
     }
+    xSemaphoreGive(mutex);
 }
 
-void StatusLightController::test()
+void StatusLightHandler::changeColor(uint8_t red, uint8_t green, uint8_t blue, uint16_t duration)
 {
-    StatusLightAnimationConfig config = {
-        .red = 255,
-        .green = 0,
-        .blue = 0,
-        .duration = 5000, // Dauer der Animation in ms
-        .brightness = 0.8f,
-        .infinite = true // Endlosschleife
-    };
-    auto loadingAnimation = std::make_unique<LoadingAnimation>(config, &statusLights);
-    scheduleAnimation(std::move(loadingAnimation), true);
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    if (currentAnimation == nullptr)
+    {
+        xSemaphoreGive(mutex);
+        return;
+    }
+    currentAnimation->changeColor(red, green, blue, duration);
+    ESP_LOGI("StatusLightHandler", "Changing color to %d %d %d", red, green, blue);
+    xSemaphoreGive(mutex);
 }
 
-void StatusLightController::schedulePulseAnimation()
+void StatusLightHandler::changeBrightness(float brightness, uint16_t duration)
 {
-    StatusLightAnimationConfig config = {
-        .red = 0,
-        .green = 255,
-        .blue = 0,
-        .duration = 2000, // Dauer der Animation in ms
-        .brightness = 0.8f,
-        .infinite = true // Endlosschleife
-    };
-    auto loadingAnimation = std::make_unique<LoadingAnimation>(config, &statusLights);
-    scheduleAnimation(std::move(loadingAnimation), true);
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    if (currentAnimation == nullptr)
+    {
+        xSemaphoreGive(mutex);
+        return;
+    }
+    currentAnimation->changeBrightness(brightness, duration);
+    ESP_LOGI("StatusLightHandler", "Changing brightness to %f", brightness);
+    xSemaphoreGive(mutex);
+}
+
+std::unique_ptr<StatusLightAnimation> StatusLightHandler::createAnimation(const StatusLightAnimationConfig &config)
+{
+    switch (config.type)
+    {
+    case StatusLightAnimationType::LOADING:
+        return std::make_unique<LoadingAnimation>(config, statusLights);
+    case StatusLightAnimationType::FADE_IN:
+        return std::make_unique<FadeInAnimation>(config, statusLights);
+    case StatusLightAnimationType::FADE_OUT:
+        return std::make_unique<FadeOutAnimation>(config, statusLights);
+    case StatusLightAnimationType::ERROR:
+        return std::make_unique<ErrorAnimation>(config, statusLights);
+    case StatusLightAnimationType::PULSE:
+        return std::make_unique<PulseAnimation>(config, statusLights);
+    default:
+        ESP_LOGE("StatusLightHandler", "Unknown animation type");
+        return nullptr;
+    }
 }

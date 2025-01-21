@@ -12,7 +12,7 @@ protected:
     int duration;
 public:
     StatusLightTransition(int duration);
-    void update(int deltaTime);
+    virtual void update(int deltaTime);
     bool isFinished();
 };
 

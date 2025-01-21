@@ -1,12 +1,15 @@
 #include "CommandHandler.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "driver/uart.h"
-#include "esp_log.h"
-#include <cstring>
-#include <algorithm>
+#include <StatusLightAnimation.h>
+#include <LoadingAnimation.h>
 
-CommandHandler::CommandHandler()
+constexpr int UART_BUFFER_SIZE = 256;
+constexpr int MAX_BUFFER_SIZE = 1000;
+constexpr uint8_t START_BYTE = 0xFF;
+constexpr uint8_t END_BYTE = 0xFE;
+constexpr uart_port_t UART_NUM = UART_NUM_0;
+constexpr uint8_t UPDATE_INTERVAL = 100;
+
+CommandHandler::CommandHandler(StatusLightHandler &statusLightHandler) : statusLightHandler(statusLightHandler)
 {
     initializeUart();
     xTaskCreate(
@@ -20,112 +23,244 @@ CommandHandler::CommandHandler()
 
 void CommandHandler::updateTaskWrapper(void *args)
 {
-    auto *controller = static_cast<CommandHandler *>(args);
-    controller->updateTask();
-};
+    auto *instance = static_cast<CommandHandler *>(args);
+    instance->updateTask();
+}
 
 void CommandHandler::updateTask()
 {
     while (1)
     {
-        uint8_t newDataBuffer[256];
-        int newDataLength = uart_read_bytes(UART_NUM, newDataBuffer, 256, pdMS_TO_TICKS(100));
-        if (newDataLength == 0)
+        uint8_t newDataBuffer[UART_BUFFER_SIZE];
+        int newDataLength = uart_read_bytes(UART_NUM, newDataBuffer, UART_BUFFER_SIZE, pdMS_TO_TICKS(UPDATE_INTERVAL));
+
+        if (newDataLength <= 0)
         {
             continue;
         }
 
-        ESP_LOGI("UART", "Received %d bytes", newDataLength);
-        if (buffer.size() > 1000)
+        if (buffer.size() + newDataLength > MAX_BUFFER_SIZE)
         {
-            ESP_LOGI("UART", "Buffer contains more than 1000 bytes, discarding");
+            ESP_LOGW("UART", "Buffer overflow risk, clearing buffer");
             buffer.clear();
         }
+
         buffer.insert(buffer.end(), newDataBuffer, newDataBuffer + newDataLength);
+        ESP_LOGI("UART", "Buffer size: %d", buffer.size());
 
-        int newStart = 0;
-        for (int i = 0; i < buffer.size(); i++)
-        {
-            ESP_LOGI("UART", "Reading byte %d", buffer[i]);
-            if (buffer[i] != START_BYTE)
-            {
-                ESP_LOGI("UART", "Does not match START_BYTE");
-                continue;
-            }
-            if (buffer.size() < i + 5)
-            {
-                ESP_LOGI("UART", "Remaining buffer too small");
-                break;
-            }
-            uint16_t length = static_cast<uint16_t>((buffer[i + 1] << 8) | buffer[i + 2]);
-            ESP_LOGI("UART", "Reading length of %d", length);
-            if (buffer.size() < i + length) // buffer.size() - 1 < i + length - 1 because we need to account for the zero-based index on the left and the missing start_byte on the right
-            {
-                ESP_LOGI("UART", "Remaining buffer too small for length value");
-                continue;
-            }
-            if (buffer[i + length - 1] != END_BYTE)
-            {
-                ESP_LOGI("UART", "Does not match END_BYTE");
-                continue;
-            }
-
-            uint64_t checksum = 0;
-            for (uint16_t j = 3; j < length - 3; j++)
-            {
-                checksum += buffer[i + j];
-            }
-            uint16_t low_bytes = static_cast<uint16_t>(checksum & 0xFFFF);
-            ESP_LOGI("UART", "Checksum: %d", low_bytes);
-
-            // Ende abschneiden
-            uint16_t packetChecksum = static_cast<uint16_t>((buffer[i + length - 3] << 8) | buffer[i + length - 2]);
-            ESP_LOGI("UART", "packet Checksum: %d", packetChecksum);
-            if (checksum != packetChecksum)
-            {
-                ESP_LOGI("UART", "Checksum does not match");
-                continue;
-            }
-            ESP_LOGI("UART", "End");
-
-            std::vector<uint8_t> frame(buffer.begin() + i, buffer.begin() + i + length);
-            newStart = i + length;
-
-            // convert subset to hex string
-            std::string hexString;
-            for (uint16_t j = 0; j < frame.size(); j++)
-            {
-                char hex[3];
-                sprintf(hex, "%02X", frame[j]);
-                hexString += hex;
-            }
-            ESP_LOGI("UART", "Hex string: %s", hexString.c_str());
-
-            if (frame[3] == 0x01)
-            {
-                ESP_LOGI("UART", "Received command 0x01");
-                uint8_t red = frame[4];
-                uint8_t green = frame[5];
-                uint8_t blue = frame[6];
-                uint16_t duration = static_cast<uint16_t>(frame[7] << 8 | frame[8]);
-                float brightness;
-                std::memcpy(&brightness, &frame[9], sizeof(float));
-                bool interrupt = static_cast<bool>(frame[13]);
-                // log those values
-                ESP_LOGI("UART", "Red: %d", red);
-                ESP_LOGI("UART", "Green: %d", green);
-                ESP_LOGI("UART", "Blue: %d", blue);
-                ESP_LOGI("UART", "Duration: %d", duration);
-                ESP_LOGI("UART", "Brightness: %f", brightness);
-                ESP_LOGI("UART", "Interrupt: %d", interrupt);
-            }
-        }
-        if (newStart > 0)
-        {
-            buffer.erase(buffer.begin(), buffer.begin() + newStart);
-        }
+        processBuffer();
     }
-};
+}
+
+void CommandHandler::processBuffer()
+{
+    auto it = buffer.begin();
+    auto newStartIt = buffer.begin();
+
+    while (it != buffer.end())
+    {
+        // Find the start of a frame
+        it = std::find(it, buffer.end(), START_BYTE);
+        if (it == buffer.end())
+        {
+            break;
+        }
+        ESP_LOGI("UART", "Possible start index: %d", std::distance(buffer.begin(), it));
+
+        // Ensure we have enough bytes for length and checksum
+        if (std::distance(it, buffer.end()) < 5)
+        {
+            ESP_LOGI("UART", "Not enough length");
+            break;
+        }
+
+        uint16_t length = (*(it + 1) << 8) | *(it + 2);
+        if (std::distance(it, buffer.end()) < length)
+        {
+            ESP_LOGI("UART", "Not enough 2nd length");
+            ++it; // Zum nächsten Byte gehen
+            continue;
+        }
+
+        // Check end byte
+        if (*(it + length - 1) != END_BYTE)
+        {
+            ESP_LOGI("UART", "Mismatched end byte");
+            ++it; // Zum nächsten Byte gehen
+            continue;
+        }
+
+        // Validate checksum
+        uint64_t checksum = 0;
+        for (auto checksumIt = it + 3; checksumIt != it + length - 3; ++checksumIt)
+        {
+            checksum += *checksumIt;
+        }
+
+        uint16_t calculatedChecksum = static_cast<uint16_t>(checksum & 0xFFFF);
+        uint16_t packetChecksum = (*(it + length - 3) << 8) | *(it + length - 2);
+
+        if (calculatedChecksum != packetChecksum)
+        {
+            ESP_LOGW("UART", "Checksum mismatch: calculated=%d, packet=%d", calculatedChecksum, packetChecksum);
+            ++it; // Zum nächsten Byte gehen
+            continue;
+        }
+
+        // Extract and process the frame
+        std::vector<uint8_t> frame(it, it + length);
+        processFrame(frame);
+
+        // Move to the next frame
+        it = it + length;
+        newStartIt = it;
+    }
+
+    // Remove processed bytes
+    if (std::distance(buffer.begin(), newStartIt) > 0)
+    {
+        buffer.erase(buffer.begin(), newStartIt);
+    }
+}
+
+void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
+{
+    // Convert frame to hex string for logging
+    std::string hexString;
+    for (uint8_t byte : frame)
+    {
+        char hex[3];
+        sprintf(hex, "%02X", byte);
+        hexString += hex;
+    }
+    ESP_LOGI("UART", "Frame: %s", hexString.c_str());
+
+    uint8_t command = frame[3];
+    switch (command)
+    {
+    case 0x01:
+    {
+        ESP_LOGI("UART", "Command 0x01");
+        if (frame.size() != 16)
+        {
+            ESP_LOGW("UART", "Invalid frame size for command 0x01: %d", frame.size());
+            return;
+        }
+        uint8_t typeId = frame[4];
+        uint8_t red = frame[5];
+        uint8_t green = frame[6];
+        uint8_t blue = frame[7];
+        uint16_t duration = (frame[8] << 8) | frame[9];
+        uint8_t brightnessLevel = frame[10];
+        float brightness = static_cast<float>(brightnessLevel) / 255.0f;
+        bool infinite = static_cast<bool>(frame[11]);
+        bool interruptCurrentAnimation = static_cast<bool>(frame[12]);
+
+        ESP_LOGI("UART", "Command 0x01: Type=%d, Red=%d, Green=%d, Blue=%d, Duration=%d, Brightness=%f, Infinite=%d, InterruptCurrentAnimation=%d",
+                 typeId, red, green, blue, duration, brightness, infinite, interruptCurrentAnimation);
+
+        StatusLightAnimationType type;
+        switch (typeId)
+        {
+        case 0x01:
+            type = StatusLightAnimationType::LOADING;
+            break;
+        case 0x02:
+            type = StatusLightAnimationType::FADE_IN;
+            break;
+        case 0x03:
+            type = StatusLightAnimationType::FADE_OUT;
+            break;
+        case 0x04:
+            type = StatusLightAnimationType::ERROR;
+            break;
+        case 0x05:
+            type = StatusLightAnimationType::PULSE;
+            break;
+        default:
+            ESP_LOGW("UART", "Unknown animation type: %d", typeId);
+            return;
+        }
+        StatusLightAnimationConfig config = {
+            .type = type,
+            .red = red,
+            .green = green,
+            .blue = blue,
+            .duration = duration,
+            .brightness = brightness,
+            .infinite = infinite};
+        statusLightHandler.startAnimation(config, interruptCurrentAnimation);
+        break;
+    }
+    case 0x02:
+    {
+        // FF XX XX 02 XB XC XC FE
+        ESP_LOGI("UART", "Command 0x02");
+        if (frame.size() != 8)
+        {
+            ESP_LOGW("UART", "Invalid frame size for command 0x02: %d", frame.size());
+            return;
+        }
+        bool interruptCurrentAnimation = static_cast<bool>(frame[4]);
+        ESP_LOGI("UART", "Command 0x02: InterruptCurrentAnimation=%d", interruptCurrentAnimation);
+        statusLightHandler.stopAnimation(interruptCurrentAnimation);
+        break;
+    }
+    case 0x03:
+    {
+        // FF XX XX 03 XB XC XC FE
+        ESP_LOGI("UART", "Command 0x03");
+        if (frame.size() != 8)
+        {
+            ESP_LOGW("UART", "Invalid frame size for command 0x03: %d", frame.size());
+            return;
+        }
+        bool interruptCurrentAnimation = static_cast<bool>(frame[4]);
+        ESP_LOGI("UART", "Command 0x03: InterruptCurrentAnimation=%d", interruptCurrentAnimation);
+        statusLightHandler.skipAnimation(interruptCurrentAnimation);
+        break;
+    }
+    case 0x04:
+    {
+        ESP_LOGI("UART", "Command 0x04");
+        // FF XX XX 04 XR XG XB XD XD XC XC FE
+        if (frame.size() != 12)
+        {
+            ESP_LOGW("UART", "Invalid frame size for command 0x04: %d", frame.size());
+            return;
+        }
+        uint8_t red = frame[4];
+        uint8_t green = frame[5];
+        uint8_t blue = frame[6];
+        uint16_t duration = (frame[7] << 8) | frame[8];
+
+        ESP_LOGI("UART", "Command 0x04: Red=%d, Green=%d, Blue=%d, Duration=%d", red, green, blue, duration);
+
+        break;
+    }
+    case 0x05:
+    {
+        ESP_LOGI("UART", "Command 0x05");
+        // FF XX XX 04 XB XD XD XC XC FE
+        if (frame.size() != 10)
+        {
+            ESP_LOGW("UART", "Invalid frame size for command 0x05: %d", frame.size());
+            return;
+        }
+        uint8_t brightnessLevel = frame[4];
+        float brightness = static_cast<float>(brightnessLevel) / 255.0f;
+        uint16_t duration = (frame[5] << 8) | frame[6];
+
+        ESP_LOGI("UART", "Command 0x05: Brightness=%f, Duration=%d", brightness, duration);
+        break;
+    }
+    default:
+    {
+        ESP_LOGW("UART", "Unknown command: %d", command);
+        break;
+    }
+    }
+}
 
 void CommandHandler::initializeUart()
 {
@@ -138,5 +273,5 @@ void CommandHandler::initializeUart()
     uart_config.source_clk = UART_SCLK_APB;
 
     ESP_ERROR_CHECK(uart_param_config(UART_NUM, &uart_config));
-    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, BUFFER_SIZE, 0, 0, NULL, 0));
+    ESP_ERROR_CHECK(uart_driver_install(UART_NUM, MAX_BUFFER_SIZE, 0, 0, NULL, 0));
 }

@@ -7,11 +7,7 @@ StatusLightTransition::StatusLightTransition(int duration)
 
 void StatusLightTransition::update(int deltaTime)
 {
-    elapsedTime += deltaTime;
-    if (elapsedTime >= duration)
-    {
-        finished = true;
-    }
+    
 }
 
 bool StatusLightTransition::isFinished()
