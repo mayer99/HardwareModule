@@ -1,4 +1,5 @@
 #include <BrightnessChangeTransition.h>
+#include <esp_log.h>
 
 BrightnessChangeTransition::BrightnessChangeTransition(const BrightnessChangeTransitionConfig &config)
     : StatusLightTransition(config.duration), initialBrightness(config.initialBrightness), targetBrightness(config.targetBrightness)

@@ -140,6 +140,9 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
     {
     case 0x01:
     {
+        // ff 00 10 01 01 80 00 20 09 c4 40 00 00 01 af fe (single)
+        // ff 00 10 01 01 80 00 20 09 c4 40 01 00 01 b0 fe (infinite)
+        // ff 00 10 01 01 80 00 20 13 88 40 01 00 01 7e fe (infinite-slow)
         ESP_LOGI("UART", "Command 0x01");
         if (frame.size() != 16)
         {
@@ -194,7 +197,7 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
     }
     case 0x02:
     {
-        // FF XX XX 02 XB XC XC FE
+        // FF 00 08 02 00 00 02 FE
         ESP_LOGI("UART", "Command 0x02");
         if (frame.size() != 8)
         {
@@ -208,7 +211,7 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
     }
     case 0x03:
     {
-        // FF XX XX 03 XB XC XC FE
+        // FF 00 08 03 00 00 03 FE
         ESP_LOGI("UART", "Command 0x03");
         if (frame.size() != 8)
         {
@@ -223,7 +226,8 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
     case 0x04:
     {
         ESP_LOGI("UART", "Command 0x04");
-        // FF XX XX 04 XR XG XB XD XD XC XC FE
+        // FF 00 0c 04 20 60 60 02 ff 01 e5 FE (blue-ish)
+        // FF 00 0c 04 f0 60 00 02 ff 02 55 FE (yellow-ish)
         if (frame.size() != 12)
         {
             ESP_LOGW("UART", "Invalid frame size for command 0x04: %d", frame.size());
@@ -235,13 +239,15 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
         uint16_t duration = (frame[7] << 8) | frame[8];
 
         ESP_LOGI("UART", "Command 0x04: Red=%d, Green=%d, Blue=%d, Duration=%d", red, green, blue, duration);
-
+        statusLightHandler.changeColor(red, green, blue, duration);
         break;
     }
     case 0x05:
     {
         ESP_LOGI("UART", "Command 0x05");
-        // FF XX XX 04 XB XD XD XC XC FE
+        // FF 00 0a 05 d0 01 f4 01 ca FE (80%)
+        // FF 00 0a 05 30 01 f4 01 0c FE (18%)
+        // FF 00 0a 05 10 01 f4 01 0a FE (6%)
         if (frame.size() != 10)
         {
             ESP_LOGW("UART", "Invalid frame size for command 0x05: %d", frame.size());
@@ -250,8 +256,8 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
         uint8_t brightnessLevel = frame[4];
         float brightness = static_cast<float>(brightnessLevel) / 255.0f;
         uint16_t duration = (frame[5] << 8) | frame[6];
-
         ESP_LOGI("UART", "Command 0x05: Brightness=%f, Duration=%d", brightness, duration);
+        statusLightHandler.changeBrightness(brightness, duration);
         break;
     }
     default:

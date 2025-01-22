@@ -142,6 +142,10 @@ void StatusLightHandler::startAnimation(const StatusLightAnimationConfig &config
         else
         {
             nextAnimation = std::move(animation);
+            if (currentAnimation->isInfinite())
+            {
+                currentAnimation->setInfinite(false);
+            }
         }
     }
     xSemaphoreGive(mutex);
