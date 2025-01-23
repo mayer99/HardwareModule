@@ -97,20 +97,14 @@ void StatusLights::setPixel(int index, uint8_t red, uint8_t green, uint8_t blue,
 {
     buffer[index * 3 + 0] = static_cast<uint8_t>(green * brightness);
     buffer[index * 3 + 1] = static_cast<uint8_t>(red * brightness);
-    ;
     buffer[index * 3 + 2] = static_cast<uint8_t>(blue * brightness);
-    ;
 }
 void StatusLights::setPixels(uint8_t red, uint8_t green, uint8_t blue, float brightness)
 {
-    ESP_LOGI(TAG, "brightness: %f", brightness);
     for (int i = 0; i < LED_COUNT; i++)
     {
-        auto r = static_cast<uint8_t>(red * brightness);
-        ESP_LOGI(TAG, "r: %d", r);
-
         buffer[i * 3 + 0] = static_cast<uint8_t>(green * brightness);
-        buffer[i * 3 + 1] = r;
+        buffer[i * 3 + 1] = static_cast<uint8_t>(red * brightness);
         buffer[i * 3 + 2] = static_cast<uint8_t>(blue * brightness);
     }
 }
