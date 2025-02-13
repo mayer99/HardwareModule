@@ -6,6 +6,4 @@
 extern "C" void app_main() {
     StatusLightHandler* statusLightHandler = new StatusLightHandler();
     CommandHandler* commandHandler = new CommandHandler(*statusLightHandler);
-    
-    // FF0010010180002009C440000001AFFE
 }

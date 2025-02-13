@@ -14,36 +14,26 @@ constexpr uint32_t TIMEOUT_KEEPALIVE = 60000;
 CommandHandler::CommandHandler(StatusLightHandler &statusLightHandler) : statusLightHandler(statusLightHandler)
 {
     initializeUart();
+
     mutex = xSemaphoreCreateMutex();
     if (mutex == nullptr)
     {
         ESP_LOGE("CommandHandler", "Failed to create mutex");
         return;
     }
-    xTaskCreate(
-        CommandHandler::updateTaskWrapper,
-        "CommandHandlerUpdateTask",
-        25600,
-        this,
-        1,
-        nullptr);
-    xTaskCreate(
-        CommandHandler::stateMonitorTaskWrapper,
-        "CommandHandlerStateMonitorTask",
-        8192,
-        this,
-        1,
-        nullptr);
+
+    xTaskCreate(CommandHandler::updateTaskWrapper, "CommandHandlerUpdateTask", 25600, this, 1, nullptr);
+    xTaskCreate(CommandHandler::stateMonitorTaskWrapper, "CommandHandlerStateMonitorTask", 8192, this, 1, nullptr);
+
     StatusLightAnimationConfig config = {
         .type = StatusLightAnimationType::PULSE,
         .red = 255,
         .green = 255,
         .blue = 255,
         .duration = 2000,
-        .brightness = 0.4f,
+        .brightness = 0.5f,
         .infinite = true};
     statusLightHandler.startAnimation(config, false);
-    ESP_LOGI("CommandHandler", "Initialized");
 }
 
 void CommandHandler::updateTaskWrapper(void *args)
@@ -67,19 +57,19 @@ void CommandHandler::updateTask()
         xSemaphoreTake(mutex, portMAX_DELAY);
         if (state == CommandHandlerState::ERROR)
         {
-            ESP_LOGW("UART", "Ignoring data in error state");
+            ESP_LOGW("CommandHandler", "Ignoring data in error state");
             xSemaphoreGive(mutex);
             continue;
         }
 
         if (buffer.size() + newDataLength > MAX_BUFFER_SIZE)
         {
-            ESP_LOGW("UART", "Buffer overflow risk, clearing buffer");
+            ESP_LOGW("CommandHandler", "Buffer overflow risk, clearing buffer");
             buffer.clear();
         }
 
         buffer.insert(buffer.end(), newDataBuffer, newDataBuffer + newDataLength);
-        ESP_LOGI("UART", "Buffer size: %d", buffer.size());
+        ESP_LOGI("CommandHandler", "Buffer size: %d", buffer.size());
 
         processBuffer();
         xSemaphoreGive(mutex);
@@ -105,7 +95,7 @@ void CommandHandler::stateMonitorTask()
             auto startDuration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime);
             if (startDuration.count() > TIMEOUT_INITIAL)
             {
-                ESP_LOGI("UART", "Initial timeout reached");
+                ESP_LOGI("CommandHandler", "Initial timeout reached");
                 state = CommandHandlerState::ERROR;
                 StatusLightAnimationConfig config = {
                     .type = StatusLightAnimationType::ERROR,
@@ -125,7 +115,7 @@ void CommandHandler::stateMonitorTask()
             auto lastKeepAliveDuration = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - lastKeepAliveTime);
             if (lastKeepAliveDuration.count() > TIMEOUT_KEEPALIVE)
             {
-                ESP_LOGI("UART", "KeepAlive timeout reached");
+                ESP_LOGI("CommandHandler", "KeepAlive timeout reached");
                 state = CommandHandlerState::ERROR;
                 StatusLightAnimationConfig config = {
                     .type = StatusLightAnimationType::ERROR,
@@ -162,32 +152,29 @@ void CommandHandler::processBuffer()
         {
             break;
         }
-        ESP_LOGI("UART", "Possible start index: %d", std::distance(buffer.begin(), it));
+        ESP_LOGI("CommandHandler", "Possible start index: %d", std::distance(buffer.begin(), it));
 
-        // Ensure we have enough bytes for length and checksum
-        if (std::distance(it, buffer.end()) < 5)
+        if (std::distance(it, buffer.end()) < 7)
         {
-            ESP_LOGI("UART", "Not enough length");
+            ESP_LOGI("CommandHandler", "Not enough length to contain length value, handlerId, commandId, checksum and endbyte");
             break;
         }
 
         uint16_t length = (*(it + 1) << 8) | *(it + 2);
         if (std::distance(it, buffer.end()) < length)
         {
-            ESP_LOGI("UART", "Not enough 2nd length");
-            ++it; // Zum nächsten Byte gehen
+            ESP_LOGI("CommandHandler", "Not enough length to match endbyte");
+            ++it;
             continue;
         }
 
-        // Check end byte
         if (*(it + length - 1) != END_BYTE)
         {
-            ESP_LOGI("UART", "Mismatched end byte");
-            ++it; // Zum nächsten Byte gehen
+            ESP_LOGI("CommandHandler", "Mismatched end byte");
+            ++it;
             continue;
         }
 
-        // Validate checksum
         uint64_t checksum = 0;
         for (auto checksumIt = it + 3; checksumIt != it + length - 3; ++checksumIt)
         {
@@ -199,21 +186,18 @@ void CommandHandler::processBuffer()
 
         if (calculatedChecksum != packetChecksum)
         {
-            ESP_LOGW("UART", "Checksum mismatch: calculated=%d, packet=%d", calculatedChecksum, packetChecksum);
-            ++it; // Zum nächsten Byte gehen
+            ESP_LOGW("CommandHandler", "Checksum mismatch: calculated=%d, packet=%d", calculatedChecksum, packetChecksum);
+            ++it;
             continue;
         }
 
-        // Extract and process the frame
         std::vector<uint8_t> frame(it, it + length);
         processFrame(frame);
 
-        // Move to the next frame
         it = it + length;
         newStartIt = it;
     }
 
-    // Remove processed bytes
     if (std::distance(buffer.begin(), newStartIt) > 0)
     {
         buffer.erase(buffer.begin(), newStartIt);
@@ -222,7 +206,6 @@ void CommandHandler::processBuffer()
 
 void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
 {
-    // Convert frame to hex string for logging
     std::string hexString;
     for (uint8_t byte : frame)
     {
@@ -230,179 +213,84 @@ void CommandHandler::processFrame(const std::vector<uint8_t> &frame)
         sprintf(hex, "%02X", byte);
         hexString += hex;
     }
-    ESP_LOGI("UART", "Frame: %s", hexString.c_str());
+    ESP_LOGI("CommandHandler", "Frame: %s", hexString.c_str());
 
     if (state == CommandHandlerState::INITIAL)
     {
-        ESP_LOGW("UART", "Received first command, switching to active state");
+        ESP_LOGI("CommandHandler", "Received first command, switching to active state");
         state = CommandHandlerState::ACTIVE;
         lastKeepAliveTime = std::chrono::steady_clock::now();
         statusLightHandler.stopAnimation(false);
     }
 
-    uint8_t command = frame[3];
-    switch (command)
+    uint8_t handlerId = frame[3];
+    switch (handlerId)
     {
     case 0x01:
     {
-        // ff 00 10 01 01 80 00 20 09 c4 40 00 00 01 af fe (single)
-        // ff 00 10 01 01 80 00 20 09 c4 40 01 00 01 b0 fe (infinite)
-        // ff 00 10 01 01 80 00 20 13 88 40 01 00 01 7e fe (infinite-slow)
-        ESP_LOGI("UART", "Command 0x01");
-        if (frame.size() != 16)
-        {
-            ESP_LOGW("UART", "Invalid frame size for command 0x01: %d", frame.size());
-            return;
-        }
-        uint8_t typeId = frame[4];
-        uint8_t red = frame[5];
-        uint8_t green = frame[6];
-        uint8_t blue = frame[7];
-        uint16_t duration = (frame[8] << 8) | frame[9];
-        uint8_t brightnessLevel = frame[10];
-        float brightness = static_cast<float>(brightnessLevel) / 255.0f;
-        bool infinite = static_cast<bool>(frame[11]);
-        bool interruptCurrentAnimation = static_cast<bool>(frame[12]);
+        std::shared_ptr<std::vector<uint8_t>> framePtr = std::make_shared<std::vector<uint8_t>>(std::move(frame));
 
-        ESP_LOGI("UART", "Command 0x01: Type=%d, Red=%d, Green=%d, Blue=%d, Duration=%d, Brightness=%f, Infinite=%d, InterruptCurrentAnimation=%d",
-                 typeId, red, green, blue, duration, brightness, infinite, interruptCurrentAnimation);
-
-        StatusLightAnimationType type;
-        switch (typeId)
+        if (xQueueSend(statusLightHandler.getCommandQueue(), &framePtr, portMAX_DELAY) != pdTRUE)
         {
-        case 0x01:
-            type = StatusLightAnimationType::LOADING;
-            break;
-        case 0x02:
-            type = StatusLightAnimationType::FADE_IN;
-            break;
-        case 0x03:
-            type = StatusLightAnimationType::FADE_OUT;
-            break;
-        case 0x04:
-            type = StatusLightAnimationType::ERROR;
-            break;
-        case 0x05:
-            type = StatusLightAnimationType::PULSE;
-            break;
-        default:
-            ESP_LOGW("UART", "Unknown animation type: %d", typeId);
-            return;
+            ESP_LOGE("CommandHandler", "Failed to send frame to the CommandQueue of StatusLightHandler");
         }
-        StatusLightAnimationConfig config = {
-            .type = type,
-            .red = red,
-            .green = green,
-            .blue = blue,
-            .duration = duration,
-            .brightness = brightness,
-            .infinite = infinite};
-        statusLightHandler.startAnimation(config, interruptCurrentAnimation);
+        else
+        {
+            ESP_LOGI("CommandHandler", "Frame successfully sent to the CommandQueue of StatusLightHandler");
+        }
         break;
     }
     case 0x02:
     {
-        // FF 00 08 02 00 00 02 FE
-        ESP_LOGI("UART", "Command 0x02");
-        if (frame.size() != 8)
+        uint8_t commandId = frame[4];
+        ESP_LOGI("CommandHandler", "Received command with id %d", commandId);
+        switch (commandId)
         {
-            ESP_LOGW("UART", "Invalid frame size for command 0x02: %d", frame.size());
-            return;
-        }
-        bool interruptCurrentAnimation = static_cast<bool>(frame[4]);
-        ESP_LOGI("UART", "Command 0x02: InterruptCurrentAnimation=%d", interruptCurrentAnimation);
-        statusLightHandler.stopAnimation(interruptCurrentAnimation);
-        break;
-    }
-    case 0x03:
-    {
-        // FF 00 08 03 01 00 04 FE
-        ESP_LOGI("UART", "Command 0x03");
-        if (frame.size() != 8)
+        case 0x01:
         {
-            ESP_LOGW("UART", "Invalid frame size for command 0x03: %d", frame.size());
-            return;
+            // FF 00 08 02 01 00 03 FE
+            if (frame.size() != 8)
+            {
+                ESP_LOGW("CommandHandler", "Invalid frame size for command 0x01 (KeepAliveResetCommand): %d", frame.size());
+                return;
+            }
+            lastKeepAliveTime = std::chrono::steady_clock::now();
+            ESP_LOGI("CommandHandler", "Command 0x01 (KeepAliveResetCommand): KeepAlive reset");
+            break;
         }
-        bool interruptCurrentAnimation = static_cast<bool>(frame[4]);
-        ESP_LOGI("UART", "Command 0x03: InterruptCurrentAnimation=%d", interruptCurrentAnimation);
-        statusLightHandler.skipAnimation(interruptCurrentAnimation);
-        break;
-    }
-    case 0x04:
-    {
-        ESP_LOGI("UART", "Command 0x04");
-        // FF 00 0c 04 20 60 60 02 ff 01 e5 FE (blue-ish)
-        // FF 00 0c 04 f0 60 00 02 ff 02 55 FE (yellow-ish)
-        if (frame.size() != 12)
+        case 0x02:
         {
-            ESP_LOGW("UART", "Invalid frame size for command 0x04: %d", frame.size());
-            return;
+            // FF 00 08 02 02 00 04 FE
+            if (frame.size() != 8)
+            {
+                ESP_LOGW("CommandHandler", "Invalid frame size for command 0x02 (RebootCommand): %d", frame.size());
+                return;
+            }
+            state = CommandHandlerState::INITIAL;
+            startTime = std::chrono::steady_clock::now();
+            StatusLightAnimationConfig config = {
+                .type = StatusLightAnimationType::PULSE,
+                .red = 255,
+                .green = 255,
+                .blue = 255,
+                .duration = 2000,
+                .brightness = 0.4f,
+                .infinite = true};
+            statusLightHandler.startAnimation(config, true);
+            ESP_LOGI("CommandHandler", "Command 0x02 (RebootCommand): Reboot");
+            break;
         }
-        uint8_t red = frame[4];
-        uint8_t green = frame[5];
-        uint8_t blue = frame[6];
-        uint16_t duration = (frame[7] << 8) | frame[8];
-
-        ESP_LOGI("UART", "Command 0x04: Red=%d, Green=%d, Blue=%d, Duration=%d", red, green, blue, duration);
-        statusLightHandler.changeColor(red, green, blue, duration);
-        break;
-    }
-    case 0x05:
-    {
-        ESP_LOGI("UART", "Command 0x05");
-        // FF 00 0a 05 d0 01 f4 01 ca FE (80%)
-        // FF 00 0a 05 30 01 f4 01 0c FE (18%)
-        // FF 00 0a 05 10 01 f4 01 0a FE (6%)
-        if (frame.size() != 10)
+        default:
         {
-            ESP_LOGW("UART", "Invalid frame size for command 0x05: %d", frame.size());
-            return;
+            ESP_LOGW("CommandHandler", "Unknown command: %d", commandId);
+            break;
         }
-        uint8_t brightnessLevel = frame[4];
-        float brightness = static_cast<float>(brightnessLevel) / 255.0f;
-        uint16_t duration = (frame[5] << 8) | frame[6];
-        ESP_LOGI("UART", "Command 0x05: Brightness=%f, Duration=%d", brightness, duration);
-        statusLightHandler.changeBrightness(brightness, duration);
-        break;
-    }
-    case 0x06:
-    {
-        // FF 00 07 06 00 06 FE
-        ESP_LOGI("UART", "Command 0x06");
-        if (frame.size() != 7)
-        {
-            ESP_LOGW("UART", "Invalid frame size for command 0x06: %d", frame.size());
-            return;
         }
-        lastKeepAliveTime = std::chrono::steady_clock::now();
-        ESP_LOGI("UART", "Command 0x06: KeepAlive reset");
-        break;
-    }
-    case 0x07:
-    {
-        // FF 00 07 07 00 07 FE
-        ESP_LOGI("UART", "Command 0x07");
-        if (frame.size() != 7)
-        {
-            ESP_LOGW("UART", "Invalid frame size for command 0x07: %d", frame.size());
-            return;
-        }
-        state = CommandHandlerState::INITIAL;
-        StatusLightAnimationConfig config = {
-            .type = StatusLightAnimationType::PULSE,
-            .red = 255,
-            .green = 255,
-            .blue = 255,
-            .duration = 1500,
-            .brightness = 0.4f,
-            .infinite = true};
-        statusLightHandler.startAnimation(config, true);
-        ESP_LOGI("UART", "Command 0x07: Reboot");
         break;
     }
     default:
     {
-        ESP_LOGW("UART", "Unknown command: %d", command);
+        ESP_LOGW("CommandHandler", "Unknown handler: %d", handlerId);
         break;
     }
     }

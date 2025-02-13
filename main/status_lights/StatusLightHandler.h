@@ -19,17 +19,28 @@ private:
     std::unique_ptr<StatusLightAnimation> currentAnimation = nullptr;
     std::unique_ptr<StatusLightAnimation> nextAnimation = nullptr;
     SemaphoreHandle_t mutex;
-    std::unique_ptr<StatusLightAnimation> createAnimation(const StatusLightAnimationConfig &config);
+    QueueHandle_t commandQueueHandle;
+
+    void processStartAnimationCommand(const std::shared_ptr<std::vector<uint8_t>> &frame);
+    void processStopAnimationCommand(const std::shared_ptr<std::vector<uint8_t>> &frame);
+    void processSkipAnimationCommand(const std::shared_ptr<std::vector<uint8_t>> &frame);
+    void processChangeColorCommand(const std::shared_ptr<std::vector<uint8_t>> &frame);
+    void processChangeBrightnessCommand(const std::shared_ptr<std::vector<uint8_t>> &frame);
+    static void updateTaskWrapper(void *args);
+    void updateTask();
+    static void processCommandQueueTaskWrapper(void *args);
+    void processCommandQueueTask();
 
 public:
     StatusLightHandler();
+    bool queueCommand(const std::vector<uint8_t> &command);
+
     void startAnimation(const StatusLightAnimationConfig &config, bool interruptCurrentAnimation);
     void stopAnimation(bool interruptCurrentAnimation);
     void skipAnimation(bool interruptCurrentAnimation);
     void changeColor(uint8_t red, uint8_t green, uint8_t blue, uint16_t duration);
     void changeBrightness(float brightness, uint16_t duration);
-    static void updateTaskWrapper(void *args);
-    void updateTask();
+    QueueHandle_t &getCommandQueue();
 };
 
 #endif
